@@ -14,6 +14,7 @@ terms of the MIT license. A copy of the license can be found in the file
 
 #ifndef ERROR_COMMITMENT_MINIMUM
 #define ERROR_COMMITMENT_MINIMUM __MSABI_LONG(635)
+#endif
 // xbox has no console IO
 #if !defined(WINAPI_FAMILY_PARTITION) || WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_APP | WINAPI_PARTITION_SYSTEM)
 #define MI_HAS_CONSOLE_IO
