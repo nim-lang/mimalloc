@@ -115,7 +115,7 @@ static mi_decl_noinline void* mi_heap_malloc_zero_aligned_at_overalloc(mi_heap_t
 
   // now zero the block if needed
   if (alignment > MI_BLOCK_ALIGNMENT_MAX) {
-    // for the tracker, on huge aligned allocations only from the start of the large block is defined
+    // for the tracker, on huge aligned allocations only the memory from the start of the large block is defined
     mi_track_mem_undefined(aligned_p, size);
     if (zero) {
       _mi_memzero_aligned(aligned_p, mi_usable_size(aligned_p));
@@ -191,9 +191,6 @@ static void* mi_heap_malloc_zero_aligned_at(mi_heap_t* const heap, const size_t 
       const bool is_aligned = (((uintptr_t)page->free + offset) & align_mask)==0;
       if mi_likely(is_aligned)
       {
-        #if MI_STAT>1
-        mi_heap_stat_increase(heap, malloc, size);
-        #endif
         void* p = (zero ? _mi_page_malloc_zeroed(heap,page,padsize) : _mi_page_malloc(heap,page,padsize)); // call specific page malloc for better codegen
         mi_assert_internal(p != NULL);
         mi_assert_internal(((uintptr_t)p + offset) % alignment == 0);
@@ -219,6 +216,11 @@ mi_decl_nodiscard mi_decl_restrict void* mi_heap_malloc_aligned_at(mi_heap_t* he
 mi_decl_nodiscard mi_decl_restrict void* mi_heap_malloc_aligned(mi_heap_t* heap, size_t size, size_t alignment) mi_attr_noexcept {
   return mi_heap_malloc_aligned_at(heap, size, alignment, 0);
 }
+
+// ensure a definition is emitted
+#if defined(__cplusplus)
+void* _mi_extern_heap_malloc_aligned = (void*)&mi_heap_malloc_aligned;
+#endif
 
 // ------------------------------------------------------
 // Aligned Allocation

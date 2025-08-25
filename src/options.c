@@ -106,11 +106,11 @@ typedef struct mi_option_desc_s {
 static mi_option_desc_t options[_mi_option_last] =
 {
   // stable options
-#if MI_DEBUG || defined(MI_SHOW_ERRORS)
+  #if MI_DEBUG || defined(MI_SHOW_ERRORS)
   { 1, UNINIT, MI_OPTION(show_errors) },
-#else
+  #else
   { 0, UNINIT, MI_OPTION(show_errors) },
-#endif
+  #endif
   { 0, UNINIT, MI_OPTION(show_stats) },
   { MI_DEFAULT_VERBOSE, UNINIT, MI_OPTION(verbose) },
 
@@ -129,7 +129,7 @@ static mi_option_desc_t options[_mi_option_last] =
        UNINIT, MI_OPTION(reserve_os_memory)     },      // reserve N KiB OS memory in advance (use `option_get_size`)
   { 0, UNINIT, MI_OPTION(deprecated_segment_cache) },   // cache N segments per thread
   { 0, UNINIT, MI_OPTION(deprecated_page_reset) },      // reset page memory on free
-  { 0, UNINIT, MI_OPTION(abandoned_page_purge) },       // purge free page memory when a thread terminates
+  { 0, UNINIT, MI_OPTION_LEGACY(abandoned_page_purge,abandoned_page_reset) },       // reset free page memory when a thread terminates
   { 0, UNINIT, MI_OPTION(deprecated_segment_reset) },   // reset segment memory on free (needs eager commit)
 #if defined(__NetBSD__)
   { 0, UNINIT, MI_OPTION(eager_commit_delay) },         // the first N segments per thread are not eagerly committed
@@ -162,6 +162,7 @@ static mi_option_desc_t options[_mi_option_last] =
          UNINIT, MI_OPTION(guarded_sample_rate)},       // 1 out of N allocations in the min/max range will be guarded (=4000)
   { 0,   UNINIT, MI_OPTION(guarded_sample_seed)},
   { 0,   UNINIT, MI_OPTION(target_segments_per_thread) }, // abandon segments beyond this point, or 0 to disable.
+  { 10000, UNINIT, MI_OPTION(generic_collect) },          // collect heaps every N (=10000) generic allocation calls
 };
 
 static void mi_option_init(mi_option_desc_t* desc);
@@ -176,11 +177,6 @@ void _mi_options_init(void) {
   for(int i = 0; i < _mi_option_last; i++ ) {
     mi_option_t option = (mi_option_t)i;
     long l = mi_option_get(option); MI_UNUSED(l); // initialize
-    // if (option != mi_option_verbose)
-    {
-      mi_option_desc_t* desc = &options[option];
-      _mi_verbose_message("option '%s': %ld %s\n", desc->name, desc->value, (mi_option_has_size_in_kib(option) ? "KiB" : ""));
-    }
   }
   mi_max_error_count = mi_option_get(mi_option_max_errors);
   mi_max_warning_count = mi_option_get(mi_option_max_warnings);
@@ -191,7 +187,50 @@ void _mi_options_init(void) {
       _mi_warning_message("option 'allow_large_os_pages' is disabled to allow for guarded objects\n");
     }
   }
-  _mi_verbose_message("guarded build: %s\n", mi_option_get(mi_option_guarded_sample_rate) != 0 ? "enabled" : "disabled");
+  #endif
+  if (mi_option_is_enabled(mi_option_verbose)) { mi_options_print(); }
+}
+
+#define mi_stringifyx(str)  #str                // and stringify
+#define mi_stringify(str)   mi_stringifyx(str)  // expand
+
+void mi_options_print(void) mi_attr_noexcept
+{
+  // show version
+  const int vermajor = MI_MALLOC_VERSION/100;
+  const int verminor = (MI_MALLOC_VERSION%100)/10;
+  const int verpatch = (MI_MALLOC_VERSION%10);
+  _mi_message("v%i.%i.%i%s%s (built on %s, %s)\n", vermajor, verminor, verpatch,
+      #if defined(MI_CMAKE_BUILD_TYPE)
+      ", " mi_stringify(MI_CMAKE_BUILD_TYPE)
+      #else
+      ""
+      #endif
+      ,
+      #if defined(MI_GIT_DESCRIBE)
+      ", git " mi_stringify(MI_GIT_DESCRIBE)
+      #else
+      ""
+      #endif
+      , __DATE__, __TIME__);
+
+  // show options
+  for (int i = 0; i < _mi_option_last; i++) {
+    mi_option_t option = (mi_option_t)i;
+    long l = mi_option_get(option); MI_UNUSED(l); // possibly initialize
+    mi_option_desc_t* desc = &options[option];
+    _mi_message("option '%s': %ld %s\n", desc->name, desc->value, (mi_option_has_size_in_kib(option) ? "KiB" : ""));
+  }
+
+  // show build configuration
+  _mi_message("debug level : %d\n", MI_DEBUG );
+  _mi_message("secure level: %d\n", MI_SECURE );
+  _mi_message("mem tracking: %s\n", MI_TRACK_TOOL);
+  #if MI_GUARDED
+  _mi_message("guarded build: %s\n", mi_option_get(mi_option_guarded_sample_rate) != 0 ? "enabled" : "disabled");
+  #endif
+  #if MI_TSAN
+  _mi_message("thread santizer enabled\n");
   #endif
 }
 
@@ -386,14 +425,14 @@ static mi_decl_noinline void mi_recurse_exit_prim(void) {
 }
 
 static bool mi_recurse_enter(void) {
-  #if defined(__APPLE__) || defined(MI_TLS_RECURSE_GUARD)
+  #if defined(__APPLE__) || defined(__ANDROID__) || defined(MI_TLS_RECURSE_GUARD)
   if (_mi_preloading()) return false;
   #endif
   return mi_recurse_enter_prim();
 }
 
 static void mi_recurse_exit(void) {
-  #if defined(__APPLE__) || defined(MI_TLS_RECURSE_GUARD)
+  #if defined(__APPLE__) || defined(__ANDROID__) || defined(MI_TLS_RECURSE_GUARD)
   if (_mi_preloading()) return;
   #endif
   mi_recurse_exit_prim();
@@ -442,6 +481,13 @@ static void mi_vfprintf_thread(mi_output_fun* out, void* arg, const char* prefix
   }
 }
 
+void _mi_message(const char* fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  mi_vfprintf_thread(NULL, NULL, "mimalloc: ", fmt, args);
+  va_end(args);
+}
+
 void _mi_trace_message(const char* fmt, ...) {
   if (mi_option_get(mi_option_verbose) <= 1) return;  // only with verbose level 2 or higher
   va_list args;
@@ -479,7 +525,7 @@ void _mi_warning_message(const char* fmt, ...) {
 
 
 #if MI_DEBUG
-void _mi_assert_fail(const char* assertion, const char* fname, unsigned line, const char* func ) {
+mi_decl_noreturn mi_decl_cold void _mi_assert_fail(const char* assertion, const char* fname, unsigned line, const char* func ) mi_attr_noexcept {
   _mi_fprintf(NULL, NULL, "mimalloc: assertion failed: at \"%s\":%u, %s\n  assertion: \"%s\"\n", fname, line, (func==NULL?"":func), assertion);
   abort();
 }
