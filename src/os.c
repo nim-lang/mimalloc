@@ -109,14 +109,25 @@ static mi_decl_cache_align _Atomic(uintptr_t)aligned_base;
 // (otherwise an initial large allocation of say 2TiB has a 50% chance to include (known) addresses
 //  in the middle of the 2TiB - 6TiB address range (see issue #372))
 
+#if defined(__ANDROID__)
+// 64-bit Android processes commonly have a 39-bit virtual address space (512GiB), so the
+// regular 2TiB-6TiB hint area is unreachable. Keep the hints in the 128GiB-192GiB range
+// instead, which is well inside that address space.
+#define MI_HINT_BASE ((uintptr_t)128 << 30) // 128GiB start
+#define MI_HINT_AREA ((uintptr_t)16 << 30)  // upto 144GiB
+#define MI_HINT_MAX  ((uintptr_t)192 << 30) // wrap after 192GiB
+#define MI_HINT_MIN_BITS 39                 // enough for the 128GiB-192GiB area
+#else
 #define MI_HINT_BASE ((uintptr_t)2 << 40)  // 2TiB start
 #define MI_HINT_AREA ((uintptr_t)4 << 40)  // upto 6TiB   (since before win8 there is "only" 8TiB available to processes)
 #define MI_HINT_MAX  ((uintptr_t)30 << 40) // wrap after 30TiB (area after 32TiB is used for huge OS pages)
+#define MI_HINT_MIN_BITS 46                // < 64TiB virtual address space
+#endif
 
 void* _mi_os_get_aligned_hint(size_t try_alignment, size_t size)
 {
   if (try_alignment <= 1 || try_alignment > MI_SEGMENT_SIZE) return NULL;
-  if (mi_os_mem_config.virtual_address_bits < 46) return NULL;  // < 64TiB virtual address space
+  if (mi_os_mem_config.virtual_address_bits < MI_HINT_MIN_BITS) return NULL;
   size = _mi_align_up(size, MI_SEGMENT_SIZE);
   if (size > 1*MI_GiB) return NULL;  // guarantee the chance of fixed valid address is at most 1/(MI_HINT_AREA / 1<<30) = 1/4096.
   #if (MI_SECURE>0)
@@ -128,7 +139,7 @@ void* _mi_os_get_aligned_hint(size_t try_alignment, size_t size)
     uintptr_t init = MI_HINT_BASE;
     #if (MI_SECURE>0 || MI_DEBUG==0)       // security: randomize start of aligned allocations unless in debug mode
     uintptr_t r = _mi_heap_random_next(mi_prim_get_default_heap());
-    init = init + ((MI_SEGMENT_SIZE * ((r>>17) & 0xFFFFF)) % MI_HINT_AREA);  // (randomly 20 bits)*4MiB == 0 to 4TiB
+    init = init + ((MI_SEGMENT_SIZE * ((r>>17) & 0xFFFFF)) % MI_HINT_AREA);  // stay within the hint area
     #endif
     uintptr_t expected = hint + size;
     mi_atomic_cas_strong_acq_rel(&aligned_base, &expected, init);
